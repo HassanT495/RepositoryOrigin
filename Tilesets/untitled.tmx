@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="right-down" width="30" height="20" tilewidth="32" tileheight="32" infinite="0" nextlayerid="7" nextobjectid="1">
+ <tileset firstgid="1" source="water_and_island_tiles_v2.tsx"/>
+ <layer id="6" name="Water" width="30" height="20">
+  <data encoding="base64" compression="zlib">
+   eJzTZmBg0B7Fo3gUj+JRPIpH8SgexVTDAFgnZMk=
+  </data>
+ </layer>
+</map>

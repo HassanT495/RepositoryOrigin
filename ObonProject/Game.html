@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
+  <title>Obon Games</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body class="layout-center">
+
+  <!-- Page toolbar -->
+  <div id="toolbar" class="toolbar" role="toolbar" aria-label="Actions">
+    <button type="button" data-attack="1" aria-keyshortcuts="1" class="hidden">Attack 1</button>
+    <button type="button" data-attack="2" aria-keyshortcuts="2" class="hidden">Attack 2</button>
+    <button type="button" data-attack="3" aria-keyshortcuts="3" class="hidden">Attack 3</button>
+    <button type="button" data-attack="4" aria-keyshortcuts="4" class="hidden">Attack 4</button>
+  </div>
+
+  <main class="game-shell">
+    <div id="app" class="game-stage" aria-live="off">
+      <canvas id="game" role="img" aria-label="Game display"></canvas>
+      <div id="overlay" class="overlay is-hidden" aria-hidden="true"></div>
+    </div>
+  </main>
+
+  <noscript>
+    <style>main{display:none}</style>
+    JavaScript required.
+  </noscript>
+
+<script type="module" src="./src/toolbar.js"></script>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
