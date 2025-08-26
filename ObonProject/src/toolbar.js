@@ -1,119 +1,175 @@
 // src/toolbar.js
-const root = document.getElementById('toolbar');
-if (!root) throw new Error('toolbar not found');
+'use strict';
 
 const EVENT_ATTACK = 'obon:attack';
+const EVENT_ATTACK_FIRED = 'obon:attack-fired';
+const EVENT_HERO_THEME = 'obon:hero-theme';
+const EVENT_CONTROLS_STATE = 'obon:controls-state';
 
-const state = {
-    baseLabels: {},       // slot -> "Aura Sphere (3)"
-    cooldownMs: {},       // slot -> duration
-    cooldownEnd: {},      // slot -> timestamp
-};
+const ATTACK_SLOTS = [1, 2, 3, 4];
 
-const fmt = (ms) => {
-    const s = Math.max(0, ms) / 1000;
-    return s >= 10 ? Math.ceil(s) + 's' : s.toFixed(1) + 's';
-};
-
-// ensure label + countdown spans once
-function ensureParts(btn) {
-    if (btn.querySelector('.label')) return;
-    btn.innerHTML = '<span class="label"></span><span class="cd" aria-hidden="true"></span>';
+function formatDuration(milliseconds) {
+    const seconds = Math.max(0, milliseconds) / 1000;
+    return seconds >= 10 ? Math.ceil(seconds) + 's' : seconds.toFixed(1) + 's';
 }
 
-// set static label
-function setLabel(slot, text) {
-    const btn = root.querySelector(`[data-attack="${slot}"]`);
-    if (!btn) return;
-    ensureParts(btn);
-    state.baseLabels[slot] = text;
-    btn.querySelector('.label').textContent = text;
+function ensureParts(buttonElement) {
+    if (buttonElement.querySelector('.label')) return;
+    buttonElement.innerHTML = '<span class="label"></span><span class="cd" aria-hidden="true"></span>';
 }
 
-function fire(slot) {
-    document.dispatchEvent(new CustomEvent(EVENT_ATTACK, { detail: { slot } }));
-}
+export function initializeToolbar(rootId = 'toolbar') {
+    const rootElement = document.getElementById(rootId);
+    if (!rootElement) throw new Error('Toolbar root not found');
 
-// input
-[1, 2, 3, 4].forEach((slot) => {
-    const b = root.querySelector(`[data-attack="${slot}"]`);
-    if (!b) return;
-    b.addEventListener('click', () => fire(slot));
-    b.addEventListener('pointerdown', (e) => {
-        if (e.pointerType !== 'mouse') fire(slot);
-    }, { passive: true });
-});
+    const state = {
+      baseLabelsBySlot: {},       // slot -> "Aura Sphere (3)"
+      cooldownDurationBySlot: {}, // slot -> milliseconds
+      cooldownEndBySlot: {},      // slot -> timestamp (performance.now)
+  };
 
-// labels + advertised cooldowns from the game
-document.addEventListener('obon:hero-theme', (e) => {
-    const map = e.detail?.map || {};
-    const cds = e.detail?.cooldowns || {};
-    [1, 2, 3, 4].forEach((slot) => {
-        const btn = root.querySelector(`[data-attack="${slot}"]`);
-        if (!btn) return;
-        if (map[slot]) {
-            btn.classList.remove('hidden');
-            setLabel(slot, `${map[slot]} (${slot})`);
-        } else {
-            btn.classList.add('hidden');
+    // Cache buttons once
+    const buttonsBySlot = Object.fromEntries(
+        ATTACK_SLOTS.map((slotNumber) => {
+            const buttonElement = rootElement.querySelector(`[data-attack="${slotNumber}"]`);
+            if (buttonElement) ensureParts(buttonElement);
+            return [slotNumber, buttonElement || null];
+        }),
+    );
+
+    function setStaticLabel(slotNumber, text) {
+        const buttonElement = buttonsBySlot[slotNumber];
+        if (!buttonElement) return;
+        ensureParts(buttonElement);
+        state.baseLabelsBySlot[slotNumber] = text;
+        buttonElement.querySelector('.label').textContent = text;
+    }
+
+    function dispatchAttack(slotNumber) {
+        document.dispatchEvent(new CustomEvent(EVENT_ATTACK, { detail: { slot: slotNumber } }));
+    }
+
+    // Button input
+    ATTACK_SLOTS.forEach((slotNumber) => {
+        const buttonElement = buttonsBySlot[slotNumber];
+        if (!buttonElement) return;
+
+        const onClick = () => dispatchAttack(slotNumber);
+        const onPointerDown = (event) => {
+            if (event.pointerType !== 'mouse') dispatchAttack(slotNumber);
+        };
+
+        buttonElement.addEventListener('click', onClick);
+        buttonElement.addEventListener('pointerdown', onPointerDown, { passive: true });
+
+      // Save for cleanup
+      buttonElement.__obonHandlers = { onClick, onPointerDown };
+  });
+
+    // Events from the game
+    const onHeroTheme = (event) => {
+        const map = event.detail?.map || {};
+        const cooldowns = event.detail?.cooldowns || {};
+        ATTACK_SLOTS.forEach((slotNumber) => {
+            const buttonElement = buttonsBySlot[slotNumber];
+            if (!buttonElement) return;
+
+            if (map[slotNumber]) {
+                buttonElement.classList.remove('hidden');
+                setStaticLabel(slotNumber, `${map[slotNumber]} (${slotNumber})`);
+            } else {
+          buttonElement.classList.add('hidden');
+      }
+        if (cooldowns[slotNumber]) {
+            state.cooldownDurationBySlot[slotNumber] = cooldowns[slotNumber];
         }
-        if (cds[slot]) state.cooldownMs[slot] = cds[slot];
     });
-});
+  };
 
-// start a cooldown when attack fires
-document.addEventListener('obon:attack-fired', (e) => {
-    const { slot, cooldownMs, at } = e.detail || {};
-    if (!slot) return;
-    const dur = cooldownMs ?? state.cooldownMs[slot] ?? 0;
-    if (dur <= 0) return;
-    state.cooldownEnd[slot] = (at ?? performance.now()) + dur;
-    if (!rafId) tick();        // kick the loop
-});
+    const onAttackFired = (event) => {
+        const slotNumber = event.detail?.slot;
+        if (!slotNumber) return;
+        const duration = event.detail?.cooldownMs ?? state.cooldownDurationBySlot[slotNumber] ?? 0;
+        if (duration <= 0) return;
+        const startAt = event.detail?.at ?? performance.now();
+        state.cooldownEndBySlot[slotNumber] = startAt + duration;
+        if (!rafId) tick(); // kick the loop
+    };
 
-document.addEventListener('obon:controls-state', (e) => {
-    const disabled = !!e.detail?.disabled;
-    root.querySelectorAll('button[data-attack]').forEach((b) => { b.disabled = disabled || b.disabled; });
-});
+    const onControlsState = (event) => {
+        const disabled = !!event.detail?.disabled;
+        ATTACK_SLOTS.forEach((slotNumber) => {
+            const buttonElement = buttonsBySlot[slotNumber];
+            if (buttonElement) buttonElement.disabled = disabled;
+        });
+  };
 
-// animation loop to render remaining cooldown
-let rafId = null;
-function tick() {
+    document.addEventListener(EVENT_HERO_THEME, onHeroTheme);
+    document.addEventListener(EVENT_ATTACK_FIRED, onAttackFired);
+    document.addEventListener(EVENT_CONTROLS_STATE, onControlsState);
+
+    // Cooldown render loop
+    let rafId = 0;
+    function tick() {
     rafId = requestAnimationFrame(tick);
     const now = performance.now();
-    let any = false;
+      let anyActive = false;
 
-    [1, 2, 3, 4].forEach((slot) => {
-        const btn = root.querySelector(`[data-attack="${slot}"]`);
-        if (!btn) return;
+      ATTACK_SLOTS.forEach((slotNumber) => {
+          const buttonElement = buttonsBySlot[slotNumber];
+          if (!buttonElement) return;
 
-        const end = state.cooldownEnd[slot] || 0;
-        const dur = state.cooldownMs[slot] || 0;
-        const left = end - now;
+        const endTime = state.cooldownEndBySlot[slotNumber] || 0;
+        const duration = state.cooldownDurationBySlot[slotNumber] || 0;
+        const remaining = endTime - now;
 
-        if (left > 0 && dur > 0) {
-            any = true;
-            btn.disabled = true;
-            btn.dataset.cooldown = '1';
-            const ratio = 1 - left / dur;                     // 0..1 elapsed
-            btn.style.setProperty('--cdp', `${Math.min(100, Math.max(0, ratio * 100))}%`);
-            ensureParts(btn);
-            btn.querySelector('.cd').textContent = ' · ' + fmt(left);
+        if (remaining > 0 && duration > 0) {
+            anyActive = true;
+            buttonElement.disabled = true;
+            buttonElement.dataset.cooldown = '1';
+            const elapsedRatio = 1 - remaining / duration; // 0..1 elapsed
+            buttonElement.style.setProperty('--cdp', `${Math.min(100, Math.max(0, elapsedRatio * 100))}%`);
+            ensureParts(buttonElement);
+            buttonElement.querySelector('.cd').textContent = ' · ' + formatDuration(remaining);
         } else {
-            btn.disabled = false;
-            btn.dataset.cooldown = '0';
-            btn.style.removeProperty('--cdp');
-            const lbl = state.baseLabels[slot];
-            if (lbl) {
-                ensureParts(btn);
-                btn.querySelector('.label').textContent = lbl;
-                btn.querySelector('.cd').textContent = '';
-            }
-        }
+          buttonElement.disabled = false;
+          buttonElement.dataset.cooldown = '0';
+          buttonElement.style.removeProperty('--cdp');
+          const label = state.baseLabelsBySlot[slotNumber];
+          if (label) {
+              ensureParts(buttonElement);
+              buttonElement.querySelector('.label').textContent = label;
+              buttonElement.querySelector('.cd').textContent = '';
+          }
+      }
     });
 
-    if (!any && rafId) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
+        if (!anyActive && rafId) {
+            cancelAnimationFrame(rafId);
+            rafId = 0;
+        }
     }
+
+    // Public cleanup
+    function stop() {
+        if (rafId) {
+            cancelAnimationFrame(rafId);
+        rafId = 0;
+    }
+        document.removeEventListener(EVENT_HERO_THEME, onHeroTheme);
+        document.removeEventListener(EVENT_ATTACK_FIRED, onAttackFired);
+        document.removeEventListener(EVENT_CONTROLS_STATE, onControlsState);
+
+        ATTACK_SLOTS.forEach((slotNumber) => {
+            const buttonElement = buttonsBySlot[slotNumber];
+            const handlers = buttonElement?.__obonHandlers;
+            if (buttonElement && handlers) {
+                buttonElement.removeEventListener('click', handlers.onClick);
+                buttonElement.removeEventListener('pointerdown', handlers.onPointerDown);
+                delete buttonElement.__obonHandlers;
+            }
+        });
+    }
+
+    return { stop };
 }

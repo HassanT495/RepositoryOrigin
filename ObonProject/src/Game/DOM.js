@@ -766,13 +766,13 @@ async function sceneCredits(bg = 'Morning.png') {
 export function start() {
   const removeLayoutListeners = applyLayout();
   (async () => {
-    // await scene1();
-    // await scene2();
-    // await scene3();
-    // await scene4();
+    await scene1();
+    await scene2();
+    await scene3();
+    await scene4();
     await scene5();      // The DOM controls fight scene order and taunts.
-    // await sceneEND();
-    // await sceneCredits();
+    await sceneEND();
+    await sceneCredits();
   })();
   function stop() {
     cancelNextWait?.();
