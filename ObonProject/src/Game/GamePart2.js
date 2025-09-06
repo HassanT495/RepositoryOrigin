@@ -8,15 +8,15 @@ export function start({ canvas, hooks = {}, scenes = null, useDomSpeech = false 
     const cssWidth = () => canvas.width / dpr;
     const cssHeight = () => canvas.height / dpr;
 
-    // === Tunables ===
+    // === Tunables (px/sec or phys per 60fps) ===
     const GROUND_FROM_BOTTOM = 10;
-    const GRAVITY = 1.5;
-    const PLAYER_WALK_SPEED = 2.2;
+    const GRAVITY = 1.5;                // per-60fps; scaled by frameScale
+    const PLAYER_WALK_SPEED = 2.2;      // px per frame @60fps; scaled by frameScale
     const PLAYER_MAX_HP = 20;
     const DEFAULT_ENEMY_HP = 3;
     const PLAYER_INV_MS = 900;
     const ENEMY_INV_MS = 300;
-    const MIN_SEP = 6;
+    const MIN_SEP = 10;
     const CONTACT_GAP = MIN_SEP;
 
     // === Events ===
@@ -26,9 +26,16 @@ export function start({ canvas, hooks = {}, scenes = null, useDomSpeech = false 
     let groundY = 0;
     let player = null;
     let enemies = [];
-    let allies = []; // NPC allies (e.g., Anko after takeover)
+    let allies = []; // NPC allies
     let raf = null;
     let t0 = performance.now();
+    let lastNow = t0;
+    let frameScale = 1; // scales per-frame speeds to time-based
+
+    // 30 FPS limiter
+    const TARGET_FPS = 30;
+    const FRAME_DURATION = 1000 / TARGET_FPS; // ~33.3ms
+    let acc = 0;
 
     // === Completion ===
     let resolveFinished;
@@ -211,7 +218,7 @@ export function start({ canvas, hooks = {}, scenes = null, useDomSpeech = false 
             this.framesMax = framesMax;
             this.framesHold = framesHold;
             this.framesCurrent = 0;
-            this.framesElapsed = 0;
+            this.framesElapsed = 0; // fractional with frameScale
             this.frameDirection = 1;
             this.pingPong = false;
             this.stretchToCanvas = stretchToCanvas;
@@ -230,15 +237,20 @@ export function start({ canvas, hooks = {}, scenes = null, useDomSpeech = false 
         update() { this.draw(); this._animate(); }
         _animate() {
             if (this.framesMax <= 1) return;
-            if ((++this.framesElapsed % (this.framesHold || 1)) !== 0) return;
-            if (this.pingPong) {
-                this.framesCurrent += this.frameDirection;
-                const end = this.framesMax - 1;
-                if (this.framesCurrent >= end || this.framesCurrent <= 0) {
-                    this.framesCurrent = Math.max(0, Math.min(this.framesCurrent, end));
-                    this.frameDirection *= -1;
+            this.framesElapsed += Math.max(0.0001, frameScale);
+            while (this.framesElapsed >= (this.framesHold || 1)) {
+                this.framesElapsed -= (this.framesHold || 1);
+                if (this.pingPong) {
+                    this.framesCurrent += this.frameDirection;
+                    const end = this.framesMax - 1;
+                    if (this.framesCurrent >= end || this.framesCurrent <= 0) {
+                        this.framesCurrent = Math.max(0, Math.min(this.framesCurrent, end));
+                        this.frameDirection *= -1;
+                    }
+                } else {
+                    this.framesCurrent = (this.framesCurrent + 1) % this.framesMax;
                 }
-            } else this.framesCurrent = (this.framesCurrent + 1) % this.framesMax;
+            }
         }
     }
 
@@ -344,11 +356,13 @@ export function start({ canvas, hooks = {}, scenes = null, useDomSpeech = false 
             const tl = this.topLeft;
             ctx.drawImage(this.image, sx, sy, frameW, frameH, tl.x, tl.y, frameW * this.scale, frameH * this.scale);
             this._animate();
-            this.position.x += this.velocity.x;
+
+            // time-scaled movement
+            this.position.x += this.velocity.x * frameScale;
             if (this.usesGravity) {
-                this.position.y += this.velocity.y;
-                if (this.position.y + this.velocity.y >= ground) { this.velocity.y = 0; this.position.y = ground; }
-                else this.velocity.y += GRAVITY;
+                this.position.y += this.velocity.y * frameScale;
+                if (this.position.y + this.velocity.y * frameScale >= ground) { this.velocity.y = 0; this.position.y = ground; }
+                else this.velocity.y += GRAVITY * frameScale;
             }
             const rect = spriteRect(this);
             const w = cssWidth();
@@ -398,10 +412,10 @@ export function start({ canvas, hooks = {}, scenes = null, useDomSpeech = false 
             this.yHit = yHit;
             this.dir = dir;
             this.state = 'fly';
-            this.velocityX = (conf.speed ?? 6) * dir;
+            this.velocityX = (conf.speed ?? 6) * dir; // per-frame@60 → scaled
             this.remaining = conf.rangePx ?? 500;
             this.frame = 0;
-            this.elapsed = 0;
+            this.elapsed = 0; // fractional for animation
             this.frameDirection = 1;
             if (!Projectile._cache.has(conf.sheet.src)) {
                 const img = new Image(); img.src = conf.sheet.src;
@@ -440,14 +454,16 @@ export function start({ canvas, hooks = {}, scenes = null, useDomSpeech = false 
         }
         updateAndDraw() {
             if (this.state === 'fly') {
-                this.xHit += this.velocityX;
-                this.remaining -= Math.abs(this.velocityX);
+                this.xHit += this.velocityX * frameScale;
+                this.remaining -= Math.abs(this.velocityX * frameScale);
                 if (this.remaining <= 0) this._explode();
             }
             this.draw();
             const def = this._def();
             const hold = def.framesHold ?? 4;
-            if ((++this.elapsed % hold) === 0) {
+            this.elapsed += Math.max(0.0001, frameScale);
+            while (this.elapsed >= hold) {
+                this.elapsed -= hold;
                 if (def.pingPong) {
                     this.frame += this.frameDirection;
                     const end = def.count - 1;
@@ -597,7 +613,7 @@ export function start({ canvas, hooks = {}, scenes = null, useDomSpeech = false 
         host.appendChild(enemySpeechEl);
     }
     function showEnemySpeech(text, options = {}) {
-        if (useDomSpeech) return Promise.resolve(); // DOM handles speeches
+        if (useDomSpeech) return Promise.resolve();
         if (!enemySpeechEl) createEnemySpeechUI();
         cutsceneActive = true;
         enemySpeechEl.textContent = text;
@@ -632,7 +648,7 @@ export function start({ canvas, hooks = {}, scenes = null, useDomSpeech = false 
     }
 
     // === Flow ===
-    let lastKillerKind = null;       // 'rat','ghost','ghostBoss', etc.
+    let lastKillerKind = null;
     let finaleTransformed = false;
 
     function maybeSpawnNextEnemy(now) {
@@ -644,7 +660,7 @@ export function start({ canvas, hooks = {}, scenes = null, useDomSpeech = false 
 
         const spec = scene.queue[spawnCursor];
 
-        // Pre-spawn line: DOM or internal
+        // Pre-spawn line
         if (spec.preLine && !spec._preShown) {
             if (useDomSpeech && typeof hooks.onPreSpawnLine === 'function') {
                 if (!pendingPreSpawn) {
@@ -778,7 +794,6 @@ export function start({ canvas, hooks = {}, scenes = null, useDomSpeech = false 
     function transformToGrandpa() {
         finaleTransformed = true;
 
-        // Keep Anko as NPC ally on the left side
         const ankoNPC = new Fighter({
             tag: 'ally',
             kind: 'heroA',
@@ -788,7 +803,6 @@ export function start({ canvas, hooks = {}, scenes = null, useDomSpeech = false 
         });
         allies.push(ankoNPC);
 
-        // Replace player with Grandpa in-place
         const keep = { x: Math.min(cssWidth() * 0.5, player.position.x), y: player.position.y, facing: player.facing };
         player = new Fighter({
             tag: 'player',
@@ -848,8 +862,8 @@ export function start({ canvas, hooks = {}, scenes = null, useDomSpeech = false 
                                 else {
                                     e.switchSprite('takeHit');
                                     const push = Math.sign(e.position.x - player.position.x) || 1;
-                                    e.velocity.x = 6 * push;
-                                    if (e.usesGravity) e.velocity.y = -4;
+                                    e.velocity.x = (6 * push) / frameScale;
+                                    if (e.usesGravity) e.velocity.y = -4 / frameScale;
                                 }
                             }
                         }
@@ -867,7 +881,7 @@ export function start({ canvas, hooks = {}, scenes = null, useDomSpeech = false 
         }
     }
 
-    // HUD / Theme broadcast (used by toolbar, cooldowns, etc.)
+    // HUD / Theme broadcast
     function broadcastHeroTheme(enable = true) {
         const tint = player.conf.hudTint || '255,255,255';
         const map = (player.kind === 'heroB')
@@ -889,227 +903,219 @@ export function start({ canvas, hooks = {}, scenes = null, useDomSpeech = false 
     function frame() {
         raf = requestAnimationFrame(frame);
         const now = performance.now();
-        const elapsedMs = now - t0;
+    const dt = now - lastNow || FRAME_DURATION;
 
-        // backdrop
-        ctx.fillStyle = 'black';
-        ctx.fillRect(0, 0, cssWidth(), cssHeight());
-        background.update();
-        ctx.fillStyle = 'rgba(255,255,255,0.12)';
-        ctx.fillRect(0, 0, cssWidth(), cssHeight());
+    // 30fps limiter: only step when ~33.3ms elapsed
+    if (dt < FRAME_DURATION - 1) return;
 
-        maybeSpawnNextEnemy(now);
+    // lock all motion/animations to 30fps (relative to 60fps-tuned constants)
+    frameScale = FRAME_DURATION / (1000 / 60); // ≈ 2.0
+    lastNow = now;
+    const elapsedMs = now - t0;
 
-        // player movement
-        if (!player.dead && !player.isAttacking && !cutsceneActive) {
-            const desiredDx = (keys.left ? -PLAYER_WALK_SPEED : 0) + (keys.right ? PLAYER_WALK_SPEED : 0);
-            const blockers = enemies.filter((e) => !e.dead);
-            const dx = blockMovementX(player, desiredDx, blockers, MIN_SEP);
-            player.velocity.x = dx;
-            applyRunAnimation(player, dx);
-        } else { player.velocity.x = 0; applyRunAnimation(player, 0); }
+    // backdrop
+    ctx.fillStyle = 'black';
+    ctx.fillRect(0, 0, cssWidth(), cssHeight());
+    background.update();
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fillRect(0, 0, cssWidth(), cssHeight());
 
-        player.update(elapsedMs, groundY);
-        if (!cutsceneActive) handlePlayerActiveAttack();
+    maybeSpawnNextEnemy(now);
 
-        // Allies idle (Anko NPC)
-        for (const a of allies) {
-            a.velocity.x = 0;
-            a.switchSprite('idle');
-            a.update(elapsedMs, groundY);
-        }
+    // player movement
+    if (!player.dead && !player.isAttacking && !cutsceneActive) {
+        const desiredDx = (keys.left ? -PLAYER_WALK_SPEED : 0) + (keys.right ? PLAYER_WALK_SPEED : 0);
+        const blockers = enemies.filter((e) => !e.dead);
+        const dx = blockMovementX(player, desiredDx, blockers, MIN_SEP);
+        player.velocity.x = dx;
+        applyRunAnimation(player, dx);
+    } else { player.velocity.x = 0; applyRunAnimation(player, 0); }
 
-        // enemies
-        for (const e of enemies) {
-            if (e.dead) {
-                e.velocity.x = 0;
-                e.update(elapsedMs, groundY);
-                if (e.state === 'death' && e.framesCurrent >= e.framesMax - 1) e._remove = true;
-                continue;
-            }
-            if (!cutsceneActive) {
-                e.facing = player.position.x >= e.position.x ? 1 : -1;
-                const ai = e.conf.ai;
-                if (ai?.type === 'chase' || ai?.type === 'chaseShoot') {
-                    const dxTo = player.position.x - e.position.x;
-                    const targetVx = Math.sign(dxTo) * (ai.speed ?? 1.0);
-                    const desiredDx = e.velocity.x + (targetVx - e.velocity.x) * (ai.accel ?? 0.2);
-                    const blockedDx = blockMovementX(e, desiredDx, [player], MIN_SEP);
-                    e.velocity.x = blockedDx;
-                    if (ai.type === 'chaseShoot' && e.conf.projectile) {
-                        const inRange = Math.abs(dxTo) <= (ai.shootRange ?? 500);
-                        if (!enemyShootCooldown.has(e)) enemyShootCooldown.set(e, -Infinity);
-                        const last = enemyShootCooldown.get(e);
-                        if (inRange && now - last >= (ai.shootCooldownMs ?? 800)) { enemyShootCooldown.set(e, now); shootEnemy(e); }
-                    }
-                    if (Math.abs(blockedDx) > 0.1) e.switchSprite(e.sheets.runRight ? 'runRight' : (e.sheets.run ? 'run' : 'idle'));
-                    else e.switchSprite('idle');
-                } else e.switchSprite('idle');
-            } else {
-                e.velocity.x = 0;
-                e.switchSprite('idle');
-            }
+    player.update(elapsedMs, groundY);
+    if (!cutsceneActive) handlePlayerActiveAttack();
+
+    // Allies idle
+    for (const a of allies) {
+        a.velocity.x = 0;
+        a.switchSprite('idle');
+        a.update(elapsedMs, groundY);
+    }
+
+    // enemies
+    for (const e of enemies) {
+        if (e.dead) {
+            e.velocity.x = 0;
             e.update(elapsedMs, groundY);
+            if (e.state === 'death' && e.framesCurrent >= e.framesMax - 1) e._remove = true;
+            continue;
         }
-        for (let i = enemies.length - 1; i >= 0; i--) {
-            if (enemies[i]._remove) enemies.splice(i, 1);
-        }
-
-        // player projectiles
-        for (let i = playerProjectiles.length - 1; i >= 0; i--) {
-            const proj = playerProjectiles[i];
-            proj.updateAndDraw();
-            if (!cutsceneActive && proj.state === 'fly') {
-                const time = performance.now();
-                if (time - lastEnemyHitAt.value > ENEMY_INV_MS) {
-                    const hb = proj.hitRect();
-                    for (const e of enemies) {
-                        if (e.dead) continue;
-                        if (rectanglesOverlap(hb, enemyHurtRect(e))) {
-                            lastEnemyHitAt.value = time;
-                            e.hp = Math.max(0, e.hp - (proj.conf.damage ?? 1));
-                            proj._explode();
-                            if (e.hp <= 0) { e.dead = true; e.switchSprite('death'); }
-                            else {
-                                e.switchSprite('takeHit');
-                                const push = Math.sign(e.position.x - player.position.x) || 1;
-                                e.velocity.x = 6 * push;
-                                if (e.usesGravity) e.velocity.y = -4;
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-            if (proj.remaining <= 0) playerProjectiles.splice(i, 1);
-        }
-
-        // enemy projectiles
-        for (let i = enemyProjectiles.length - 1; i >= 0; i--) {
-            const proj = enemyProjectiles[i];
-            proj.updateAndDraw();
-            if (!cutsceneActive && proj.state === 'fly') {
-                const time = performance.now();
-                if (time - lastPlayerHitAt.value > PLAYER_INV_MS) {
-                    if (rectanglesOverlap(proj.hitRect(), spriteRect(player)) && !player.dead) {
-                        lastPlayerHitAt.value = time;
-                        const newHp = Math.max(0, player.hp - (proj.conf.damage ?? 1));
-                        if (newHp <= 0) lastKillerKind = proj.ownerKind || null;
-                        player.hp = newHp;
-                        proj._explode();
-                        if (player.hp <= 0) { player.dead = true; player.switchSprite('death'); player.velocity.x = 0; }
-                        else {
-                            const push = Math.sign(player.position.x - proj.xHit) || 1;
-                            player.velocity.x = 3 * push;
-                            if (player.usesGravity) player.velocity.y = -3;
-                            player.switchSprite('takeHit');
-                        }
-                    }
-                }
-            }
-            if (proj.remaining <= 0) enemyProjectiles.splice(i, 1);
-        }
-
-        // touch damage
         if (!cutsceneActive) {
-            for (const e of enemies) {
-                if (e.dead || !e.usesGravity) continue;
-                const time = performance.now();
-                if (time - lastPlayerHitAt.value > PLAYER_INV_MS && !player.dead && isNearContact(e, player, CONTACT_GAP)) {
+            e.facing = player.position.x >= e.position.x ? 1 : -1;
+            const ai = e.conf.ai;
+            if (ai?.type === 'chase' || ai?.type === 'chaseShoot') {
+                const dxTo = player.position.x - e.position.x;
+                const targetVx = Math.sign(dxTo) * (ai.speed ?? 1.0);
+                const desiredDx = e.velocity.x + (targetVx - e.velocity.x) * (ai.accel ?? 0.2);
+                const blockedDx = blockMovementX(e, desiredDx, [player], MIN_SEP);
+                e.velocity.x = blockedDx;
+                if (ai.type === 'chaseShoot' && e.conf.projectile) {
+                    const inRange = Math.abs(dxTo) <= (ai.shootRange ?? 500);
+                    if (!enemyShootCooldown.has(e)) enemyShootCooldown.set(e, -Infinity);
+                    const last = enemyShootCooldown.get(e);
+                    if (inRange && now - last >= (ai.shootCooldownMs ?? 800)) { enemyShootCooldown.set(e, now); shootEnemy(e); }
+                }
+                if (Math.abs(blockedDx) > 0.1) e.switchSprite(e.sheets.runRight ? 'runRight' : (e.sheets.run ? 'run' : 'idle'));
+                else e.switchSprite('idle');
+            } else e.switchSprite('idle');
+        } else {
+            e.velocity.x = 0;
+            e.switchSprite('idle');
+        }
+        e.update(elapsedMs, groundY);
+    }
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        if (enemies[i]._remove) enemies.splice(i, 1);
+    }
+
+    // player projectiles
+    for (let i = playerProjectiles.length - 1; i >= 0; i--) {
+        const proj = playerProjectiles[i];
+        proj.updateAndDraw();
+        if (!cutsceneActive && proj.state === 'fly') {
+            const time = performance.now();
+            if (time - lastEnemyHitAt.value > ENEMY_INV_MS) {
+                const hb = proj.hitRect();
+                for (const e of enemies) {
+                    if (e.dead) continue;
+                    if (rectanglesOverlap(hb, enemyHurtRect(e))) {
+                        lastEnemyHitAt.value = time;
+                        e.hp = Math.max(0, e.hp - (proj.conf.damage ?? 1));
+                        proj._explode();
+                        if (e.hp <= 0) { e.dead = true; e.switchSprite('death'); }
+                        else {
+                            e.switchSprite('takeHit');
+                            const push = Math.sign(e.position.x - player.position.x) || 1;
+                            e.velocity.x = (6 * push) / frameScale;
+                            if (e.usesGravity) e.velocity.y = -4 / frameScale;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        if (proj.remaining <= 0) playerProjectiles.splice(i, 1);
+    }
+
+    // enemy projectiles
+    for (let i = enemyProjectiles.length - 1; i >= 0; i--) {
+        const proj = enemyProjectiles[i];
+        proj.updateAndDraw();
+        if (!cutsceneActive && proj.state === 'fly') {
+            const time = performance.now();
+            if (time - lastPlayerHitAt.value > PLAYER_INV_MS) {
+                if (rectanglesOverlap(proj.hitRect(), spriteRect(player)) && !player.dead) {
                     lastPlayerHitAt.value = time;
-                    const dmg = e.conf.contactDamage ?? 1;
-                    const newHp = Math.max(0, player.hp - dmg);
-                    if (newHp <= 0) lastKillerKind = e.kind;
+                    const newHp = Math.max(0, player.hp - (proj.conf.damage ?? 1));
+                    if (newHp <= 0) lastKillerKind = proj.ownerKind || null;
                     player.hp = newHp;
+                    proj._explode();
                     if (player.hp <= 0) { player.dead = true; player.switchSprite('death'); player.velocity.x = 0; }
                     else {
-                        const push = Math.sign(player.position.x - e.position.x) || 1;
-                        player.velocity.x = 3 * push;
-                        if (player.usesGravity) player.velocity.y = -3;
+                        const push = Math.sign(player.position.x - proj.xHit) || 1;
+                        player.velocity.x = (3 * push) / frameScale;
+                        if (player.usesGravity) player.velocity.y = -3 / frameScale;
                         player.switchSprite('takeHit');
                     }
                 }
             }
         }
+        if (proj.remaining <= 0) enemyProjectiles.splice(i, 1);
+    }
 
-        // Hooks & scene advance
-        if (sceneCleared() && !nextHookSent) {
-            nextHookSent = true;
-            if (typeof hooks.onReadyForNext === 'function') {
-                const s = SCENES[currentSceneIndex];
-                const pr = spriteRect(player);
-                const right = pr.x + pr.w;
-                const exitRatio = s?.flow?.exitThresholdRatio ?? 0.9;
-                hooks.onReadyForNext(api, {
-                    atExit: right >= cssWidth() * exitRatio,
-                    sceneId: s.id,
-                    sceneIndex: currentSceneIndex,
-                    isLast: currentSceneIndex >= SCENES.length - 1
-                });
-            }
-        }
-
-        // Death handling
-        if (player.dead && !deathHookSent && player.framesCurrent === player.framesMax - 1) {
-            deathHookSent = true;
-            const s = SCENES[currentSceneIndex];
-            const sceneId = s?.id;
-
-            if (typeof hooks.onPlayerDeath === 'function') {
-                // Let DOM decide (retry or Grandpa takeover). No engine-side auto actions.
-                hooks.onPlayerDeath(api, { sceneId, killerKind: lastKillerKind });
-            } else {
-                // Fallback engine behavior
-                const isFinale = sceneId === 10;
-                if (isFinale && lastKillerKind === 'ghostBoss' && !finaleTransformed) {
-                    // Internal quick takeover path if DOM hook absent
-                    player.dead = false;
-                    player.switchSprite('idle');
-                    (async () => {
-                        await runFade(1, 500);
-                        transformToGrandpa();
-                        await runFade(0, 500);
-                    })();
-                    deathHookSent = false;
-                } else {
-                    retryScene();
+    // touch damage
+    if (!cutsceneActive) {
+        for (const e of enemies) {
+            if (e.dead || !e.usesGravity) continue;
+            const time = performance.now();
+            if (time - lastPlayerHitAt.value > PLAYER_INV_MS && !player.dead && isNearContact(e, player, CONTACT_GAP)) {
+                lastPlayerHitAt.value = time;
+                const dmg = e.conf.contactDamage ?? 1;
+                const newHp = Math.max(0, player.hp - dmg);
+                if (newHp <= 0) lastKillerKind = e.kind;
+                player.hp = newHp;
+                if (player.hp <= 0) { player.dead = true; player.switchSprite('death'); player.velocity.x = 0; }
+                else {
+                    const push = Math.sign(player.position.x - e.position.x) || 1;
+                    player.velocity.x = (3 * push) / frameScale;
+                    if (player.usesGravity) player.velocity.y = -3 / frameScale;
+                    player.switchSprite('takeHit');
                 }
             }
         }
+    }
 
-        // Health bars
-        drawHealthBar(player, 'lime');
-        for (const e of enemies) drawHealthBar(e, 'crimson');
-
-        // Fade overlay render & progress
-        if (fade.running || fade.alpha > 0) {
-            const t = Math.min(1, (now - fade.startAt) / Math.max(1, fade.endAt - fade.startAt));
-            fade.alpha = fade.start + (fade.target - fade.start) * t;
-            if (t >= 1 && fade.running) {
-                fade.running = false;
-                const done = fade._resolve; fade._resolve = null;
-                if (done) done();
-            }
-            ctx.save();
-            ctx.globalAlpha = Math.max(0, Math.min(1, fade.alpha));
-            ctx.fillStyle = '#000';
-            ctx.fillRect(0, 0, cssWidth(), cssHeight());
-            ctx.restore();
+    // Hooks & scene advance
+    if (sceneCleared() && !nextHookSent) {
+        nextHookSent = true;
+        if (typeof hooks.onReadyForNext === 'function') {
+            const s = SCENES[currentSceneIndex];
+            const pr = spriteRect(player);
+            const right = pr.x + pr.w;
+            const exitRatio = s?.flow?.exitThresholdRatio ?? 0.9;
+            hooks.onReadyForNext(api, {
+                atExit: right >= cssWidth() * exitRatio,
+                sceneId: s.id,
+                sceneIndex: currentSceneIndex,
+                isLast: currentSceneIndex >= SCENES.length - 1
+            });
         }
     }
 
-    // Health Bar
-    function drawHealthBar(f, color) {
-        const max = f.maxHp || 1;
-        const r = spriteRect(f);
-        const width = 60, height = 6;
-        const x = r.x + (r.w - width) / 2;
-        const y = r.y - 10;
-        ctx.fillStyle = 'rgba(0,0,0,0.5)';
-        ctx.fillRect(x - 2, y - 2, width + 4, height + 4);
-        ctx.fillStyle = color;
-        ctx.fillRect(x, y, width * (f.hp / max), height);
+    // Death handling
+    if (player.dead && !deathHookSent && player.framesCurrent === player.framesMax - 1) {
+        deathHookSent = true;
+        const s = SCENES[currentSceneIndex];
+        const sceneId = s?.id;
+
+        if (typeof hooks.onPlayerDeath === 'function') {
+            hooks.onPlayerDeath(api, { sceneId, killerKind: lastKillerKind });
+        } else {
+            const isFinale = sceneId === 10;
+            if (isFinale && lastKillerKind === 'ghostBoss' && !finaleTransformed) {
+                player.dead = false;
+                player.switchSprite('idle');
+                (async () => {
+                    await runFade(1, 500);
+                    transformToGrandpa();
+                    await runFade(0, 500);
+                })();
+                deathHookSent = false;
+            } else {
+                retryScene();
+            }
+        }
     }
+
+    // Health bars
+    drawHealthBar(player, 'lime');
+    for (const e of enemies) drawHealthBar(e, 'crimson');
+
+    // Fade overlay render & progress
+    if (fade.running || fade.alpha > 0) {
+        const t = Math.min(1, (now - fade.startAt) / Math.max(1, fade.endAt - fade.startAt));
+        fade.alpha = fade.start + (fade.target - fade.start) * t;
+        if (t >= 1 && fade.running) {
+            fade.running = false;
+            const done = fade._resolve; fade._resolve = null;
+            if (done) done();
+        }
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, Math.min(1, fade.alpha));
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, cssWidth(), cssHeight());
+        ctx.restore();
+    }
+}
 
     // External Controls
     function onExternalAttack(e) {
